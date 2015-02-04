@@ -1,0 +1,21 @@
+<project name='console-downloader' default='jar' >
+  <property name="src" value="./src" />
+  <property name="dest" value="./bin" />
+
+  <target name='compile'>
+    <mkdir dir="${dest}"/>
+    <javac srcdir="${src}" destdir="${dest}" includeantruntime="false">
+      <classpath path="."/>
+    </javac>
+  </target>
+  
+  <target name='jar' depends='compile'>
+    <jar destfile="console-downloader.jar" basedir="." includes="**/*.class">
+        <manifest>
+            <attribute name="Main-Class" value="Main"/>
+            <attribute name="Class-Path" value="."/>
+        </manifest>
+        <fileset dir="${dest}"/>
+	</jar>
+  </target>
+</project>  
