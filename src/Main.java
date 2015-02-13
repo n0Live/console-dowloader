@@ -16,7 +16,7 @@ public class Main {
 	 * 
 	 * @param speedLimitString
 	 *            строка ограничение скорости с префиксами
-	 * @return числовое значения ограничения скорости, б/с
+	 * @return числовое значение ограничения скорости, б/с
 	 * @throws NumberFormatException
 	 */
 	private static int parseSpeedLimit(String speedLimitString) throws NumberFormatException {

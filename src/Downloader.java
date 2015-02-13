@@ -8,36 +8,26 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.logging.Logger;
 
-public class Downloader implements Callable<Integer> {
-	
+public class Downloader implements Runnable {
 	/**
 	 * Размер буфера для скачивания
 	 */
-	private final int BUF_SIZE = 1024 * 4;
+	public final static int BUF_SIZE = 1024 * 4;
 	
 	private final URL url;
-	private final int speedLimit;
 	private final Set<String> files;
+	
+	/**
+	 * Слушатель события чтения порции байт
+	 */
+	private final DownloadProcessListener listener;
 	
 	/**
 	 * Буфер для скачивания
 	 */
 	private final byte[] buf;
-	/**
-	 * Период измерения скорости скачивания
-	 */
-	private final int interval;// миллисекунд
-	/**
-	 * Отметка времени перед началом скачивания
-	 */
-	private final long initTimestamp;
-	/**
-	 * Количество прочитанных байт
-	 */
-	private int bytesRead;
 	
 	/**
 	 * Загрузчик, возвращает количество прочитанных байт в Future
@@ -46,18 +36,21 @@ public class Downloader implements Callable<Integer> {
 	 *            ссылка для скачивания
 	 * @param files
 	 *            имена файлов для сохранения содержимого ссылки
-	 * @param speedLimit
-	 *            максимальная скорость скачивания, байт/с. 0 - не ограничено.
+	 * @param listener
+	 *            слушатель событий чтения порции байт
 	 * @throws MalformedURLException
 	 */
-	public Downloader(String urlToRead, Set<String> files, int speedLimit)
+	public Downloader(String urlToRead, Set<String> files, DownloadProcessListener listener)
 	        throws MalformedURLException {
 		url = new URL(urlToRead);
 		this.files = files;
-		this.speedLimit = speedLimit;
+		this.listener = listener;
 		buf = new byte[BUF_SIZE];
-		interval = (int) (BUF_SIZE / ((float) this.speedLimit / 1000));
-		initTimestamp = System.currentTimeMillis();
+	}
+	
+	private void fireChunkReaded(int chunkSize) {
+		DownloadEvent event = new DownloadEvent(this, chunkSize);
+		listener.chunkReaded(event);
 	}
 	
 	/**
@@ -97,7 +90,7 @@ public class Downloader implements Callable<Integer> {
 	}
 	
 	/**
-	 * Чтение потока с учетом ограничения максимальной скорости скачивания
+	 * Чтение потока с учетом ограничения скорости скачивания
 	 * 
 	 * @param in
 	 *            входящий поток
@@ -107,40 +100,14 @@ public class Downloader implements Callable<Integer> {
 	 * @throws IOException
 	 */
 	private boolean limitedRead(InputStream in, OutputStream out) throws IOException {
-		long lastCheckTimestamp = 0;
-		if (speedLimit > 0) {
-			lastCheckTimestamp = System.currentTimeMillis();
-		}
+		// проверка флага
+		if (SpeedManager.takePauseFlag) return true;
 		
 		int result = -1;
 		result = in.read(buf);
 		if (result >= 0) {
 			out.write(buf, 0, result);
-			bytesRead += result;
-		}
-		
-		if (speedLimit > 0) {
-			long now = System.currentTimeMillis();
-			
-			// если чтение закончилось быстрее заданного интервала
-			if (now - lastCheckTimestamp < interval) {
-				// спим до конца интервала
-				long timeToSleep = interval - (now - lastCheckTimestamp);
-				try {
-					Thread.sleep(timeToSleep);
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-			}
-			
-			if (Main.isDebug) {
-				// вычисляем текущую скорость
-				long timeElapsed = System.currentTimeMillis() - initTimestamp;
-				int currentSpeed = Math.round(bytesRead / ((float) timeElapsed / 1000));
-				Logger.getGlobal().info(
-				        "URL: " + url.toString() + " | Скорость: " + currentSpeed + " | Лимит: "
-				                + speedLimit);
-			}
+			fireChunkReaded(result);
 		}
 		
 		return result >= 0;
@@ -166,12 +133,11 @@ public class Downloader implements Callable<Integer> {
 	}
 	
 	@Override
-	public Integer call() throws Exception {
+	public void run() {
 		try {
 			getFileFromHttp();
 		} catch (Exception e) {
 			throw new RuntimeException(e.getLocalizedMessage() + "\nURL: " + url.toString(), e);
 		}
-		return bytesRead;
 	}
 }

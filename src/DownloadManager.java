@@ -4,7 +4,6 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.MalformedURLException;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
@@ -24,7 +23,7 @@ public class DownloadManager {
 	/**
 	 * Ограничение максимальной скорости на все потоки
 	 */
-	private final int globalSpeedLimit;
+	private final int speedLimit;
 	/**
 	 * Папка для сохранения скачанных файлов
 	 */
@@ -37,10 +36,6 @@ public class DownloadManager {
 	 * Пул потоков скачивания
 	 */
 	private final ExecutorService downloadPool;
-	/**
-	 * Количество скачанных байт
-	 */
-	private long downloadedBytes;
 	
 	/**
 	 * Менеджер загрузок
@@ -56,7 +51,7 @@ public class DownloadManager {
 	 */
 	public DownloadManager(int threadsCount, int speedLimit, String inputFileName,
 	        String outputFolder) {
-		globalSpeedLimit = speedLimit;
+		this.speedLimit = speedLimit;
 		
 		// если папка не задана, сохраняем в текущую рабочую папку пользователя
 		if (outputFolder.isEmpty()) {
@@ -111,94 +106,100 @@ public class DownloadManager {
 	/**
 	 * Отчет по работе программы
 	 * 
-	 * @param start
-	 *            отметка времени начала скачивания
-	 * @param done
-	 *            отметка времени завершения скачивания
+	 * @param result
+	 *            результаты работы: количество скачанных байт и время закачки
+	 *            (Long[2])
 	 * @param errorsCount
 	 *            количество ошибок, возникших во время работы
 	 */
-	private void showResults(long start, long done, int errorsCount) {
-		// форматируем количество скачанных байт
-		String sDownloadedBytes;
-		if (downloadedBytes > 1024) {
-			if (downloadedBytes > 1024 * 1024) {
-				sDownloadedBytes = String.format(Locale.ENGLISH, "%.2fm", (float) downloadedBytes
-				        / (1024 * 1024));
+	private void showResults(Long[] result, int errorsCount) {
+		try {
+			// форматируем количество скачанных байт
+			long downloadedBytes = result[0];
+			String sDownloadedBytes;
+			if (downloadedBytes > 1024) {
+				if (downloadedBytes > 1024 * 1024) {
+					sDownloadedBytes = String.format(Locale.ENGLISH, "%.2fm",
+					        (float) downloadedBytes / (1024 * 1024));
+				} else {
+					sDownloadedBytes = String.format(Locale.ENGLISH, "%.2fk",
+					        (float) downloadedBytes / 1024);
+				}
 			} else {
-				sDownloadedBytes = String.format(Locale.ENGLISH, "%.2fk",
-				        (float) downloadedBytes / 1024);
+				sDownloadedBytes = String.valueOf(downloadedBytes);
 			}
-		} else {
-			sDownloadedBytes = String.valueOf(downloadedBytes);
+			
+			// форматируем время работы программы
+			long elapsedTime = result[1];
+			String workedTime = String.format(
+			        "%d мин, %d сек",
+			        TimeUnit.MILLISECONDS.toMinutes(elapsedTime),
+			        TimeUnit.MILLISECONDS.toSeconds(elapsedTime)
+			                - TimeUnit.MINUTES.toSeconds(TimeUnit.MILLISECONDS
+			                        .toMinutes(elapsedTime)));
+			
+			// форматируем среднюю скорость скачивания
+			String avgSpeed = String.format(Locale.ENGLISH, "%.2f байт/c", downloadedBytes
+			        / ((float) elapsedTime / 1000));
+			
+			System.out.println("Скачано байт: " + sDownloadedBytes);
+			System.out.println("Время работы: " + workedTime);
+			System.out.print("Средняя скорость: " + avgSpeed);
+			System.out.println(speedLimit > 0 ? " (Ограничение: " + speedLimit + " байт/c)" : "");
+			
+		} catch (Exception e) {
+			System.err.println("ОШИБКА: " + e.getLocalizedMessage());
+			errorsCount++;
 		}
-		
-		// форматируем время работы программы
-		long elapsedTime = done - start;
-		String workedTime = String.format(
-		        "%d мин, %d сек",
-		        TimeUnit.MILLISECONDS.toMinutes(elapsedTime),
-		        TimeUnit.MILLISECONDS.toSeconds(elapsedTime)
-		                - TimeUnit.MINUTES.toSeconds(TimeUnit.MILLISECONDS.toMinutes(elapsedTime)));
-		
-		// форматируем среднюю скорость скачивания
-		String avgSpeed = String.format(Locale.ENGLISH, "%.2f байт/c", downloadedBytes
-		        / ((float) elapsedTime / 1000));
 		
 		if (errorsCount > 0) {
 			System.err.println("Во время работы произошли ошибки: " + errorsCount);
 		}
 		
-		System.out.println("Скачано байт: " + sDownloadedBytes);
-		System.out.println("Время работы: " + workedTime);
-		System.out.println("Средняя скорость: " + avgSpeed);
 	}
 	
 	/**
 	 * Запуск закачек
 	 */
 	public void startWork() {
-		ArrayList<Future<Integer>> futures = new ArrayList<>();
 		int errorsCount = 0; // счетчик ошибок
-		// расчитываем ограничения скорости для одного потока
-		int oneThreadSpeedLimit = Math.round((float) globalSpeedLimit / threadsCount);
 		
-		// отметка времени начала скачивания
-		long workStartedTimestamp = System.currentTimeMillis();
+		// менеджер ограничения скорости закачек
+		SpeedManager speedManager = new SpeedManager(speedLimit);
+		ExecutorService speedManagerThread = Executors.newSingleThreadExecutor();
+		Future<Long[]> future = speedManagerThread.submit(speedManager);
 		
 		for (String url : urls.keySet()) {
 			try {
-				futures.add(downloadPool.submit(new Downloader(url, urls.get(url),
-				        oneThreadSpeedLimit)));
+				downloadPool.execute(new Downloader(url, urls.get(url), speedManager));
 			} catch (MalformedURLException e) {
 				System.err.println("ОШИБКА: " + e.getLocalizedMessage());
 				errorsCount++;
 			}
 		}
-		
-		// считаем прочитанные байты
-		for (Future<Integer> future : futures) {
-			try {
-				int bytesRead = future.get();
-				downloadedBytes += bytesRead;
-			} catch (ExecutionException e) {
-				System.err.println("ОШИБКА: " + e.getLocalizedMessage());
-				errorsCount++;
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
-		}
-		
-		// отметка времени завершения скачивания
-		long workDoneTimestamp = System.currentTimeMillis();
-		
 		downloadPool.shutdown();
+		
 		try {
-			downloadPool.awaitTermination(5, TimeUnit.SECONDS);
+			downloadPool.awaitTermination(Integer.MAX_VALUE, TimeUnit.MILLISECONDS);
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 		}
 		
-		showResults(workStartedTimestamp, workDoneTimestamp, errorsCount);
+		// выставляем флаг завершения работы менеджеру закачек
+		SpeedManager.downloadCompleteFlag = true;
+		speedManagerThread.shutdown();
+		
+		// результаты работы: количество скачанных байт и время закачки
+		Long[] result = null;
+		try {
+			result = future.get();
+		} catch (ExecutionException e) {
+			System.err.println("ОШИБКА: " + e.getLocalizedMessage());
+			errorsCount++;
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		
+		showResults(result, errorsCount);
 	}
 }
