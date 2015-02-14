@@ -1,4 +1,5 @@
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public class SpeedManager implements Callable<Long[]>, DownloadProcessListener {
@@ -13,7 +14,7 @@ public class SpeedManager implements Callable<Long[]>, DownloadProcessListener {
 	/**
 	 * ¬сего скачано, байт
 	 */
-	private long totalBytesRead;
+	private volatile AtomicLong totalBytesRead;
 	
 	/**
 	 * ‘лаг паузы закачки дл€ качающих потоков если превышена скорость
@@ -34,7 +35,7 @@ public class SpeedManager implements Callable<Long[]>, DownloadProcessListener {
 	public SpeedManager(int speedLimit) {
 		this.speedLimit = speedLimit;
 		initTimeStamp = System.currentTimeMillis();
-		totalBytesRead = 0;
+		totalBytesRead = new AtomicLong(0);
 	}
 	
 	@Override
@@ -51,7 +52,8 @@ public class SpeedManager implements Callable<Long[]>, DownloadProcessListener {
 		
 		while (!downloadCompleteFlag) {
 			now = System.currentTimeMillis();
-			currentSpeed = Math.round(totalBytesRead / ((float) (now - initTimeStamp) / 1000));
+			currentSpeed = Math
+			        .round(totalBytesRead.get() / ((float) (now - initTimeStamp) / 1000));
 			
 			// выставл€ем флаг при превышении скорости закачки
 			takePauseFlag = speedLimit > 0 && currentSpeed > speedLimit;
@@ -68,12 +70,12 @@ public class SpeedManager implements Callable<Long[]>, DownloadProcessListener {
 			Thread.sleep(timeToSleep);
 		}
 		
-		Long[] result = { totalBytesRead, System.currentTimeMillis() - initTimeStamp };
+		Long[] result = { totalBytesRead.get(), System.currentTimeMillis() - initTimeStamp };
 		return result;
 	}
 	
 	@Override
 	public void chunkReaded(DownloadEvent event) {
-		totalBytesRead += event.getChunkSize();
+		totalBytesRead.addAndGet(event.getChunkSize());
 	}
 }
